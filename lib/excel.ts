@@ -21,6 +21,14 @@ export const TEMPLATE_COLUMNS = [
   "B_エラーID（E001/E002/E003）",
   "C_エラーID（E001/E002/E003）",
   "D_エラーID（E001/E002/E003）",
+  "Tip1_タイトル",
+  "Tip1_内容",
+  "Tip2_タイトル",
+  "Tip2_内容",
+  "Tip3_タイトル",
+  "Tip3_内容",
+  "Tip4_タイトル",
+  "Tip4_内容",
 ];
 
 const CATEGORY_MAP: Record<string, GrammarCategory> = {
@@ -64,6 +72,14 @@ export function downloadTemplate() {
     "E001",
     "",
     "E001",
+    "pride oneself on の使い方",
+    "「〜を誇りに思う」という慣用表現。目的語には再帰代名詞が入る。",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
   ];
 
   // カテゴリ一覧シート
@@ -96,6 +112,14 @@ export function downloadTemplate() {
     { wch: 20 },
     { wch: 20 },
     { wch: 20 },
+    { wch: 25 }, // Tip1_タイトル
+    { wch: 50 }, // Tip1_内容
+    { wch: 25 }, // Tip2_タイトル
+    { wch: 50 }, // Tip2_内容
+    { wch: 25 }, // Tip3_タイトル
+    { wch: 50 }, // Tip3_内容
+    { wch: 25 }, // Tip4_タイトル
+    { wch: 50 }, // Tip4_内容
   ];
 
   XLSX.utils.book_append_sheet(wb, ws, "問題データ");
@@ -201,6 +225,14 @@ export function parseExcel(buffer: ArrayBuffer): ParseResult {
       col(row, "D_誤答理由"),
     ];
 
+    // Tips（タイトルと内容のペアが両方あるものだけ追加）
+    const tips = [1, 2, 3, 4]
+      .map((n) => ({
+        title: col(row, `Tip${n}_タイトル`),
+        body: col(row, `Tip${n}_内容`),
+      }))
+      .filter((t) => t.title && t.body);
+
     const ids = ["A", "B", "C", "D"] as const;
     const texts = [choiceA, choiceB, choiceC, choiceD];
 
@@ -226,7 +258,7 @@ export function parseExcel(buffer: ArrayBuffer): ParseResult {
         step3: "消去法で正解を確定する。",
       },
       explanation: explanation || "（解説未入力）",
-      tips: [],
+      tips,
       isUserAdded: true,
       source,
     };
