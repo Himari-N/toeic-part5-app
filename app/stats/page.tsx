@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { getStats, clearProgress, getWrongWordStats } from "@/lib/storage";
+import { getStats, clearProgress, getWrongWordStats, exportAllData, importAllData } from "@/lib/storage";
 import { WeakPoint } from "@/lib/types";
 
 export default function StatsPage() {
@@ -13,11 +13,31 @@ export default function StatsPage() {
     weakPoints: WeakPoint[];
   }>({ total: 0, correct: 0, rate: 0, weakPoints: [] });
   const [wrongWords, setWrongWords] = useState<{ text: string; count: number }[]>([]);
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; message: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setStats(getStats());
     setWrongWords(getWrongWordStats());
   }, []);
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const result = importAllData(text);
+      setImportMsg(result);
+      if (result.ok) {
+        setStats(getStats());
+        setWrongWords(getWrongWordStats());
+      }
+    };
+    reader.readAsText(file);
+    // inputをリセット（同じファイルを再選択できるよう）
+    e.target.value = "";
+  };
 
   const handleReset = () => {
     if (confirm("学習履歴をすべてリセットしますか？")) {
@@ -235,6 +255,58 @@ export default function StatsPage() {
             );
           })}
         </div>
+      </div>
+
+      {/* データ管理（Safari↔ホーム画面アプリ間の移行用） */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-6 shadow-sm">
+        <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-1">
+          データ管理
+        </h2>
+        <p className="text-xs text-slate-400 mb-4">
+          Safariとホームアプリでデータを共有したいときに使用
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={() => exportAllData()}
+            className="flex-1 flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold py-3 rounded-xl transition-colors text-sm"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            書き出し
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex-1 flex items-center justify-center gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold py-3 rounded-xl transition-colors text-sm border border-blue-200"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12" />
+            </svg>
+            読み込み
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImport}
+          />
+        </div>
+        {importMsg && (
+          <div className={`mt-3 text-xs px-3 py-2 rounded-lg ${
+            importMsg.ok
+              ? "bg-green-50 text-green-700 border border-green-200"
+              : "bg-red-50 text-red-600 border border-red-200"
+          }`}>
+            {importMsg.message}
+          </div>
+        )}
+        <p className="text-xs text-slate-400 mt-3 leading-relaxed">
+          ① 今のデバイスで「書き出し」→ JSON ファイルを保存<br />
+          ② 移行先のデバイス/ブラウザで「読み込み」→ 同じファイルを選択
+        </p>
       </div>
 
       {/* CTA */}

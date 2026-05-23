@@ -101,6 +101,56 @@ export function getQuestionStats(): Record<string, { total: number; wrong: numbe
   return map;
 }
 
+/** 全データをJSONとしてエクスポート（ダウンロード） */
+export function exportAllData(): void {
+  const data: Record<string, unknown> = {};
+  const keys = [
+    STORAGE_KEY,
+    USER_QUESTIONS_KEY,
+    "toeic_part5_timer_setting",
+    "toeic_part5_shuffle",
+    "toeic_part5_weak_mode",
+    "toeic_part5_speech_rate",
+  ];
+  for (const key of keys) {
+    const v = localStorage.getItem(key);
+    if (v !== null) data[key] = JSON.parse(v);
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const date = new Date().toISOString().slice(0, 10);
+  a.download = `toeic_backup_${date}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/** JSONファイルをインポートしてlocalStorageに復元 */
+export function importAllData(json: string): { ok: boolean; message: string } {
+  try {
+    const data = JSON.parse(json) as Record<string, unknown>;
+    const keys = [
+      STORAGE_KEY,
+      USER_QUESTIONS_KEY,
+      "toeic_part5_timer_setting",
+      "toeic_part5_shuffle",
+      "toeic_part5_weak_mode",
+      "toeic_part5_speech_rate",
+    ];
+    for (const key of keys) {
+      if (key in data) {
+        localStorage.setItem(key, JSON.stringify(data[key]));
+      }
+    }
+    return { ok: true, message: "インポート成功！ページをリロードしてください。" };
+  } catch {
+    return { ok: false, message: "ファイルの形式が正しくありません。" };
+  }
+}
+
 /** 誤答した選択肢テキストの頻度ランキングを返す（多い順、上位10件） */
 export function getWrongWordStats(): { text: string; count: number }[] {
   const progress = loadProgress();
