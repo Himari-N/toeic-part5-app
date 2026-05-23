@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Question } from "@/lib/types";
-import { saveAnswer, getAllQuestions } from "@/lib/storage";
+import { saveAnswer, getAllQuestions, getQuestionStats } from "@/lib/storage";
 import { tagColors, errorLabels } from "@/lib/constants";
 
 type Phase = "question" | "result";
@@ -23,6 +23,83 @@ const TIMER_PRESETS: { label: string; value: number }[] = [
 
 const TIMER_STORAGE_KEY = "toeic_part5_timer_setting";
 const SHUFFLE_STORAGE_KEY = "toeic_part5_shuffle";
+const WEAK_STORAGE_KEY = "toeic_part5_weak_mode";
+const SPEECH_RATE_KEY = "toeic_part5_speech_rate";
+
+// ── Web Speech API ────────────────────────────────────────────
+function useSpeech() {
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [rate, setRate] = useState<number>(() => {
+    if (typeof window === "undefined") return 1.0;
+    return Number(localStorage.getItem(SPEECH_RATE_KEY)) || 1.0;
+  });
+
+  const stop = () => {
+    if (typeof window === "undefined") return;
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  };
+
+  const speak = (text: string) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    stop();
+    const clean = text.replace(/_+/g, "blank");
+    const utter = new SpeechSynthesisUtterance(clean);
+    utter.lang = "en-US";
+    utter.rate = rate;
+    // 英語音声を優先して選択
+    const voices = window.speechSynthesis.getVoices();
+    const enVoice = voices.find(
+      (v) => v.lang.startsWith("en") && (v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Daniel") || v.name.includes("Google US English"))
+    ) ?? voices.find((v) => v.lang.startsWith("en-US")) ?? voices.find((v) => v.lang.startsWith("en"));
+    if (enVoice) utter.voice = enVoice;
+    utter.onstart = () => setIsSpeaking(true);
+    utter.onend = () => setIsSpeaking(false);
+    utter.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utter);
+  };
+
+  const changeRate = (r: number) => {
+    setRate(r);
+    localStorage.setItem(SPEECH_RATE_KEY, String(r));
+    stop();
+  };
+
+  return { speak, stop, isSpeaking, rate, changeRate };
+}
+
+// スピーカーボタンコンポーネント
+function SpeakButton({ text, speak, isSpeaking, stop }: {
+  text: string;
+  speak: (t: string) => void;
+  isSpeaking: boolean;
+  stop: () => void;
+}) {
+  return (
+    <button
+      onClick={() => isSpeaking ? stop() : speak(text)}
+      className={`flex-shrink-0 flex items-center justify-center w-8 h-8 rounded-full border transition-colors ${
+        isSpeaking
+          ? "bg-blue-600 border-blue-600 text-white"
+          : "bg-white border-slate-200 text-slate-400 hover:border-blue-300 hover:text-blue-500"
+      }`}
+    >
+      {isSpeaking ? (
+        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+          <rect x="6" y="4" width="4" height="16" rx="1"/>
+          <rect x="14" y="4" width="4" height="16" rx="1"/>
+        </svg>
+      ) : (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M15.536 8.464a5 5 0 010 7.072M12 6v12m-3.536-9.536a5 5 0 000 7.072M9 12H3m18 0h-3" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M11 5L6 9H2v6h4l5 4V5z" />
+        </svg>
+      )}
+    </button>
+  );
+}
 
 function loadTimerSetting(): TimerSetting {
   if (typeof window === "undefined") return 0;
@@ -45,6 +122,19 @@ function shuffleArray<T>(arr: T[]): T[] {
   return a;
 }
 
+// 苦手優先：間違えた問題ほど前に来るよう重み付きソート
+function weakPrioritySort(qs: Question[], stats: Record<string, { total: number; wrong: number }>): Question[] {
+  return [...qs].sort((a, b) => {
+    const sa = stats[a.id];
+    const sb = stats[b.id];
+    // 未回答=最優先(weight=1.0)、回答済みは誤答率で決定
+    const wa = sa ? sa.wrong / sa.total : 1.0;
+    const wb = sb ? sb.wrong / sb.total : 1.0;
+    if (wb !== wa) return wb - wa; // 誤答率が高い順
+    return Math.random() - 0.5; // 同率はランダム
+  });
+}
+
 function QuizContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -52,38 +142,63 @@ function QuizContent() {
   // SSR時は空、クライアントでユーザー問題を含む全問取得
   const [allQuestions, setAllQuestions] = useState<Question[] | null>(null);
   const [shuffle, setShuffle] = useState(false);
+  const [weakMode, setWeakMode] = useState(false);
   const [displayQuestions, setDisplayQuestions] = useState<Question[] | null>(null);
 
   useEffect(() => {
     const qs = getAllQuestions();
     const s = loadShuffleSetting();
+    const w = localStorage.getItem(WEAK_STORAGE_KEY) === "true";
     setShuffle(s);
+    setWeakMode(w);
     setAllQuestions(qs);
   }, []);
 
   const categoryFilter = searchParams.get("category");
 
-  // allQuestions or shuffle が変わったら表示用リストを再生成
+  // allQuestions / shuffle / weakMode が変わったら表示用リストを再生成
   useEffect(() => {
     if (allQuestions === null) return;
     const filtered = categoryFilter
       ? allQuestions.filter((q) => q.grammarCategory === categoryFilter)
       : allQuestions;
-    setDisplayQuestions(shuffle ? shuffleArray(filtered) : filtered);
+    let ordered: Question[];
+    if (weakMode) {
+      ordered = weakPrioritySort(filtered, getQuestionStats());
+    } else if (shuffle) {
+      ordered = shuffleArray(filtered);
+    } else {
+      ordered = filtered;
+    }
+    setDisplayQuestions(ordered);
     setIndex(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allQuestions, shuffle, categoryFilter]);
+  }, [allQuestions, shuffle, weakMode, categoryFilter]);
 
   const toggleShuffle = () => {
     const next = !shuffle;
     setShuffle(next);
     localStorage.setItem(SHUFFLE_STORAGE_KEY, String(next));
-    // 即座に並び替え直す
+    if (next) { setWeakMode(false); localStorage.setItem(WEAK_STORAGE_KEY, "false"); }
     if (allQuestions !== null) {
       const filtered = categoryFilter
         ? allQuestions.filter((q) => q.grammarCategory === categoryFilter)
         : allQuestions;
       setDisplayQuestions(next ? shuffleArray(filtered) : filtered);
+      setIndex(0);
+    }
+  };
+
+  const toggleWeakMode = () => {
+    const next = !weakMode;
+    setWeakMode(next);
+    localStorage.setItem(WEAK_STORAGE_KEY, String(next));
+    if (next) { setShuffle(false); localStorage.setItem(SHUFFLE_STORAGE_KEY, "false"); }
+    if (allQuestions !== null) {
+      const filtered = categoryFilter
+        ? allQuestions.filter((q) => q.grammarCategory === categoryFilter)
+        : allQuestions;
+      setDisplayQuestions(next ? weakPrioritySort(filtered, getQuestionStats()) : filtered);
       setIndex(0);
     }
   };
@@ -97,6 +212,13 @@ function QuizContent() {
   const [showSVO, setShowSVO] = useState(false);
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
   const [stepUnlocked, setStepUnlocked] = useState<1 | 2 | 3>(1);
+  const [showRateMenu, setShowRateMenu] = useState(false);
+
+  // ── 音声読み上げ ──
+  const { speak, stop, isSpeaking, rate, changeRate } = useSpeech();
+
+  // 問題が変わったら読み上げ停止
+  useEffect(() => { stop(); }, [index]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── タイマー関連 ──
   const [timerSetting, setTimerSetting] = useState<TimerSetting>(0);
@@ -148,6 +270,10 @@ function QuizContent() {
   }, [phase]);
 
   const q: Question | undefined = filteredQuestions?.[index];
+
+  // スラッシュ・SVOデータが有効かどうか（インポート問題は持っていない）
+  const hasSlashData = (q?.slashGroups?.length ?? 0) > 1;
+  const hasSVOData = q?.chunks?.some((c) => c.tag) ?? false;
 
   useEffect(() => {
     setSelected(null);
@@ -241,6 +367,23 @@ function QuizContent() {
           ← ホーム
         </Link>
         <div className="flex items-center gap-2">
+          {/* 苦手優先ボタン */}
+          <button
+            onClick={toggleWeakMode}
+            title="間違えた問題を優先して出題"
+            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
+              weakMode
+                ? "bg-red-50 border-red-300 text-red-700"
+                : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
+            }`}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            {weakMode ? "苦手優先" : "苦手優先"}
+          </button>
+
           {/* シャッフルボタン */}
           <button
             onClick={toggleShuffle}
@@ -257,6 +400,39 @@ function QuizContent() {
             </svg>
             {shuffle ? "シャッフル" : "固定順"}
           </button>
+
+          {/* 音声速度ボタン */}
+          <div className="relative">
+            <button
+              onClick={() => { setShowRateMenu((v) => !v); setShowTimerMenu(false); }}
+              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
+                isSpeaking
+                  ? "bg-green-50 border-green-300 text-green-700"
+                  : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
+              }`}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" />
+              </svg>
+              {rate}x
+            </button>
+            {showRateMenu && (
+              <div className="absolute right-0 top-9 bg-white border border-slate-200 rounded-xl shadow-lg z-10 py-1 min-w-[100px]">
+                {[0.75, 1.0, 1.25, 1.5].map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => { changeRate(r); setShowRateMenu(false); }}
+                    className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-50 transition-colors ${
+                      rate === r ? "text-blue-600 font-semibold" : "text-slate-700"
+                    }`}
+                  >
+                    {r}x {r === 0.75 ? "（遅め）" : r === 1.0 ? "（標準）" : r === 1.25 ? "（速め）" : "（速い）"}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* タイマー設定ボタン */}
           <div className="relative">
@@ -373,35 +549,47 @@ function QuizContent() {
 
       {/* Sentence display */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-4 shadow-sm">
-        {/* Toggle buttons */}
-        <div className="flex gap-2 mb-4">
-          <button
-            onClick={() => {
-              setShowSlash(!showSlash);
-              if (showSVO) setShowSVO(false);
-            }}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
-              showSlash
-                ? "bg-blue-600 text-white border-blue-600"
-                : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
-            }`}
-          >
-            / スラッシュ
-          </button>
-          <button
-            onClick={() => {
-              setShowSVO(!showSVO);
-              if (showSlash) setShowSlash(false);
-            }}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
-              showSVO
-                ? "bg-slate-800 text-white border-slate-800"
-                : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
-            }`}
-          >
-            S/V/O/M タグ
-          </button>
+        {/* 読み上げボタン */}
+        <div className="flex items-center justify-between mb-3">
+          <SpeakButton text={q.sentence} speak={speak} isSpeaking={isSpeaking} stop={stop} />
+          <span className="text-xs text-slate-400">タップで問題文を読み上げ</span>
         </div>
+
+        {/* Toggle buttons（組み込み問題のみ表示） */}
+        {(hasSlashData || hasSVOData) && (
+          <div className="flex gap-2 mb-4">
+            {hasSlashData && (
+              <button
+                onClick={() => {
+                  setShowSlash(!showSlash);
+                  if (showSVO) setShowSVO(false);
+                }}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
+                  showSlash
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
+                }`}
+              >
+                / スラッシュ
+              </button>
+            )}
+            {hasSVOData && (
+              <button
+                onClick={() => {
+                  setShowSVO(!showSVO);
+                  if (showSlash) setShowSlash(false);
+                }}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
+                  showSVO
+                    ? "bg-slate-800 text-white border-slate-800"
+                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+                }`}
+              >
+                S/V/O/M タグ
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Sentence */}
         <div className="text-lg leading-relaxed font-medium text-slate-900">
@@ -542,7 +730,7 @@ function QuizContent() {
             isCorrect ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"
           }`}
         >
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
             <span
               className={`text-2xl font-black ${
                 isCorrect ? "text-green-600" : "text-red-500"
@@ -550,9 +738,15 @@ function QuizContent() {
             >
               {isCorrect ? "正解！" : "不正解"}
             </span>
-            <span className="text-slate-500 text-sm">
+            <span className="text-slate-500 text-sm flex-1">
               正解：({q.correctAnswer}) {q.choices.find((c) => c.id === q.correctAnswer)?.text}
             </span>
+            <SpeakButton
+              text={q.choices.find((c) => c.id === q.correctAnswer)?.text ?? ""}
+              speak={speak}
+              isSpeaking={isSpeaking}
+              stop={stop}
+            />
           </div>
 
           {/* Explanation */}

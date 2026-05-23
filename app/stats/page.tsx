@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getStats, clearProgress } from "@/lib/storage";
+import { getStats, clearProgress, getWrongWordStats } from "@/lib/storage";
 import { WeakPoint } from "@/lib/types";
 
 export default function StatsPage() {
@@ -12,9 +12,11 @@ export default function StatsPage() {
     rate: number;
     weakPoints: WeakPoint[];
   }>({ total: 0, correct: 0, rate: 0, weakPoints: [] });
+  const [wrongWords, setWrongWords] = useState<{ text: string; count: number }[]>([]);
 
   useEffect(() => {
     setStats(getStats());
+    setWrongWords(getWrongWordStats());
   }, []);
 
   const handleReset = () => {
@@ -137,6 +139,68 @@ export default function StatsPage() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Wrong word top 10 */}
+      <div className="mb-6">
+        <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">
+          よく間違える選択肢 Top 10
+        </h2>
+        {wrongWords.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-400 text-sm">
+            まだ誤答データがありません
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            {wrongWords.map((w, i) => {
+              const maxCount = wrongWords[0].count;
+              const pct = Math.round((w.count / maxCount) * 100);
+              return (
+                <div
+                  key={w.text}
+                  className={`flex items-center gap-3 px-4 py-3 ${
+                    i < wrongWords.length - 1 ? "border-b border-slate-100" : ""
+                  }`}
+                >
+                  <span
+                    className={`w-6 text-center text-xs font-bold flex-shrink-0 ${
+                      i === 0
+                        ? "text-red-500"
+                        : i === 1
+                        ? "text-orange-400"
+                        : i === 2
+                        ? "text-yellow-500"
+                        : "text-slate-400"
+                    }`}
+                  >
+                    {i + 1}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-semibold text-slate-800 truncate">
+                        {w.text}
+                      </span>
+                      <span className="text-xs text-red-500 font-bold ml-2 flex-shrink-0">
+                        {w.count}回
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          i === 0 ? "bg-red-400" : i <= 2 ? "bg-orange-300" : "bg-slate-300"
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <p className="text-xs text-slate-400 mt-2 text-center">
+          ※ 間違えて選んだ選択肢テキストの集計（同じ単語を繰り返し間違えるほど上位）
+        </p>
       </div>
 
       {/* Error categories legend */}

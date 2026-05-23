@@ -1,4 +1,4 @@
-import { UserProgress, UserAnswer, WeakPoint, Question } from "@/lib/types";
+import { UserProgress, UserAnswer, WeakPoint, Question, Choice } from "@/lib/types";
 import { questions as builtInQuestions } from "@/data/questions";
 import { grammarLabels } from "@/lib/constants";
 
@@ -87,4 +87,53 @@ export function getStats(): {
 export function getAnsweredIds(): Set<string> {
   const progress = loadProgress();
   return new Set(progress.answers.map((a) => a.questionId));
+}
+
+/** 問題IDごとの正誤統計を返す */
+export function getQuestionStats(): Record<string, { total: number; wrong: number }> {
+  const progress = loadProgress();
+  const map: Record<string, { total: number; wrong: number }> = {};
+  for (const a of progress.answers) {
+    if (!map[a.questionId]) map[a.questionId] = { total: 0, wrong: 0 };
+    map[a.questionId].total++;
+    if (!a.isCorrect) map[a.questionId].wrong++;
+  }
+  return map;
+}
+
+/** 誤答した選択肢テキストの頻度ランキングを返す（多い順、上位10件） */
+export function getWrongWordStats(): { text: string; count: number }[] {
+  const progress = loadProgress();
+  const allQ = getAllQuestions();
+  const qMap: Record<string, Question> = {};
+  for (const q of allQ) qMap[q.id] = q;
+
+  const wordCount: Record<string, number> = {};
+
+  for (const a of progress.answers) {
+    if (a.isCorrect) continue;
+    const q = qMap[a.questionId];
+    if (!q) continue;
+    const choice: Choice | undefined = q.choices.find((c) => c.id === a.selectedAnswer);
+    if (!choice) continue;
+    const text = choice.text;
+    wordCount[text] = (wordCount[text] ?? 0) + 1;
+  }
+
+  return Object.entries(wordCount)
+    .map(([text, count]) => ({ text, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+}
+
+/** 日付ごとの回答数を返す（キー: "YYYY-MM-DD"） */
+export function getDailyAnswerCounts(): Record<string, number> {
+  const progress = loadProgress();
+  const map: Record<string, number> = {};
+  for (const a of progress.answers) {
+    const d = new Date(a.timestamp);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    map[key] = (map[key] ?? 0) + 1;
+  }
+  return map;
 }
